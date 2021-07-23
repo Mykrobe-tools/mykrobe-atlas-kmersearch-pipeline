@@ -5,63 +5,73 @@ params.predefinedSignatureSizes = [12000000, 13000000, 15000000, 20000000, 40000
 params.image = "kms.sif"
 params.term_size = 31
 params.false_positive_rate = 0.3
+params.outputDir = "/nfs/leia/research/iqbal/zhicheng/giang-cobs-pipeline/my-branch/output"
 
 samples = file(params.samples)
 image = file(params.image)
 
 process splitSamplesIntoBatches {
 	output:
-	file 'x*' into batches mode flatten
+	file 'x*' into (batches,  batch_names) mode flatten
 
 	"""
 	split -l $params.batchSize $samples
 	"""
 }
 
-sigSizes = params.predefinedSignatureSizes.collect()
+signature_sizes = Channel.from(params.predefinedSignatureSizes)
+batch_names.combine(signature_sizes).set{combined}
+
+process makeBatchIndexDirectories {
+    input:
+    set batch_name, signature_size from combined
+
+    output:
+    val true into done_makeBatchIndexDirectories
+
+    """
+	mkdir -p $params.outputDir/step1/$batch_name.baseName/index/$signature_size
+	mkdir -p $params.outputDir/step2/index/$signature_size
+	mkdir -p $params.outputDir/merged/index/$signature_size
+    """
+}
 
 process buildBatches {
 	// COBS output benchmark info to STDERR to they registers as errors
 	errorStrategy 'ignore'
 
 	input:
+	val flag from done_makeBatchIndexDirectories.collect()
 	file batch from batches
 
 	output:
-	file '*' into batchSignatureSizeDirs
+    val true into done_buildBatches
 
 	"""
-	mkdir -p index/{12,13,15,20,40,80,160}000000
-	singularity exec $image build --classic_index_dir index --term_size $params.term_size --false_positive_rate $params.false_positive_rate $batch
+	singularity exec $image build --classic_index_dir $params.outputDir/step1/$batch.baseName/index --term_size $params.term_size --false_positive_rate $params.false_positive_rate $batch
 	"""
 }
 
 process collectBatches {
 	// Don't really need input but need to wait for the last process to finish
 	input:
-	file 'dir' from batchSignatureSizeDirs.collect()
+	val flag from done_buildBatches.collect()
+	val signature_size from Channel.from(params.predefinedSignatureSizes)
 
 	output:
-	file '*' into collectedSignatureSizeDirs
+    val true into done_collectBatches
 
 	"""
-	mkdir {12,13,15,20,40,80,160}000000
-	find $workDir -regex .*/12000000/.*cobs_classic | xargs -I{} mv --backup=t {} 12000000/
-	find $workDir -regex .*/13000000/.*cobs_classic	| xargs	-I{} mv --backup=t {} 13000000/
-	find $workDir -regex .*/15000000/.*cobs_classic	| xargs	-I{} mv --backup=t {} 15000000/
-	find $workDir -regex .*/20000000/.*cobs_classic	| xargs	-I{} mv --backup=t {} 20000000/
-	find $workDir -regex .*/40000000/.*cobs_classic	| xargs	-I{} mv --backup=t {} 40000000/
-	find $workDir -regex .*/80000000/.*cobs_classic	| xargs	-I{} mv --backup=t {} 80000000/
-	find $workDir -regex .*/160000000/.*cobs_classic | xargs -I{} mv --backup=t {} 160000000/
-	find $workDir -name *~ | xargs -I{} mv {} {}.cobs_classic
+	find $params.outputDir/step1/ -regex .*/$signature_size/.*cobs_classic | xargs -I{} mv --backup=t {} $params.outputDir/step2/index/$signature_size/
 	"""
 }
 
 process mergeIndices {
 	input:
-	file dir from collectedSignatureSizeDirs.flatten()
+	val flag from done_collectBatches.collect()
+	val signature_size from Channel.from(params.predefinedSignatureSizes)
 
 	"""
-	[ "\$(ls -A $dir)" ] && singularity exec $image cobs classic-combine -m $params.combine_memory_limit $dir $dir ${dir}/merged.cobs_classic || echo 0
+	[ "\$(ls -A $params.outputDir/step2/index/$signature_size/)" ] && singularity exec $image cobs classic-combine -m $params.combine_memory_limit $params.outputDir/step2/index/$signature_size/ $params.outputDir/merged/index/$signature_size/ $params.outputDir/merged/index/$signature_size/merged.cobs_classic || echo 0
 	"""
 }
