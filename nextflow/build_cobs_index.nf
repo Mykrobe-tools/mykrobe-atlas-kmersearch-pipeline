@@ -23,6 +23,10 @@ signature_sizes = Channel.from(params.predefinedSignatureSizes)
 batch_names.combine(signature_sizes).set{combined}
 
 process makeBatchIndexDirectories {
+    errorStrategy 'retry'
+    maxRetries 3
+    maxForks 20
+
     input:
     set batch_name, signature_size from combined
 
@@ -39,6 +43,7 @@ process makeBatchIndexDirectories {
 process buildBatches {
 	// COBS output benchmark info to STDERR to they registers as errors
 	errorStrategy 'ignore'
+        maxForks 10
 
 	input:
 	val flag from done_makeBatchIndexDirectories.collect()
